@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calendar puzzle solver</title>
+<style>
+  :root {
+    --bg: #f4efe6; --text: #2b2620; --muted: #6f665a;
+    --frame: #c9a878; --well: #f7ecd6; --line: #3a2f22;
+    --btn: #fffaf0; --btn-border: #b9a88c; --accent: #8a5a1f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1d1a17; --text: #efe7da; --muted: #a79c8c;
+      --frame: #5b4630; --well: #2c2620; --line: #120e0a;
+      --btn: #2a2520; --btn-border: #5a4e40; --accent: #e0b070;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 520px; margin: 0 auto; padding: 24px 16px 40px; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+  p.sub { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .row.center { justify-content: center; }
+  button, input[type=date] {
+    font: inherit; color: var(--text); background: var(--btn);
+    border: 1px solid var(--btn-border); border-radius: 8px; padding: 8px 12px;
+  }
+  button { cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+  input[type=date] { flex: 1; min-width: 150px; }
+  #count { margin: 20px 0 12px; font-size: 18px; font-weight: 600; text-align: center; }
+  #board { display: block; width: 100%; height: auto; }
+  #pos { margin: 12px 0 8px; text-align: center; color: var(--muted); font-size: 14px; min-height: 21px; }
+  .cell-label { font-size: 17px; font-weight: 600; fill: var(--text); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Calendar puzzle solver</h1>
+  <p class="sub">Pick a date. The ten pieces cover everything except the month, the day and the weekday.</p>
+
+  <div class="row">
+    <button id="prevDay" aria-label="Previous day">&larr;</button>
+    <input type="date" id="date" aria-label="Date">
+    <button id="nextDay" aria-label="Next day">&rarr;</button>
+    <button id="today">Today</button>
+  </div>
+
+  <div id="count" aria-live="polite"></div>
+  <svg id="board" viewBox="0 0 452 512" role="img" aria-label="Puzzle board"></svg>
+  <div id="pos" aria-live="polite"></div>
+  <div class="row center" id="nav">
+    <button id="prevSol">Previous</button>
+    <button id="nextSol" class="primary">Next solution</button>
+  </div>
+</main>
+
+<script>
+// ---------- Board layout (edit here if your board differs) ----------
+var ROWS = 8, COLS = 7;
+var MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+var WEEKDAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']; // index = Date.getDay()
+var WEEKDAY_CELL = [[6,3],[6,4],[6,5],[6,6],[7,4],[7,5],[7,6]];
+function monthCell(m) { return [Math.floor(m / 6), m % 6]; }           // m: 0-11
+function dayCell(d) { return [2 + Math.floor((d - 1) / 7), (d - 1) % 7]; } // d: 1-31
+
+function isBoardCell(r, c) {
+  if (r < 0 || r >= ROWS || c < 0 || c >= COLS) return false;
+  if (r < 2) return c < 6;
+  if (r === 7) return c >= 4;
+  return true;
+}
+
+// ---------- Pieces (7 pentominoes + 3 tetrominoes) ----------
+var PIECES = [
+  [[0,0],[0,1],[0,2],[1,0],[1,2]],        // U
+  [[0,1],[1,0],[1,1],[2,0]],              // S tetromino
+  [[0,1],[1,1],[2,0],[2,1],[2,2]],        // T
+  [[0,0],[0,1],[1,1],[2,1],[2,2]],        // Z
+  [[0,0],[0,1],[1,0],[1,1],[2,0]],        // P
+  [[0,3],[1,0],[1,1],[1,2],[1,3]],        // L pentomino
+  [[0,0],[0,1],[0,2],[0,3]],              // I tetromino
+  [[0,0],[1,0],[1,1],[2,1],[3,1]],        // N
+  [[0,0],[0,1],[1,1],[2,1]],              // L tetromino
+  [[0,0],[1,0],[2,0],[2,1],[2,2]]         // V
+];
+
+// All distinct rotations/flips, each anchored on its first cell in reading order.
+function orientations(shape) {
+  var seen = {}, out = [];
+  for (var flip = 0; flip < 2; flip++) {
+    var q = shape.map(function (p) { return [p[0], flip ? -p[1] : p[1]]; });
+    for (var rot = 0; rot < 4; rot++) {
+      q = q.map(function (p) { return [p[1], -p[0]]; });
+      var s = q.slice().sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
+      var norm = s.map(function (p) { return [p[0] - s[0][0], p[1] - s[0][1]]; });
+      var key = JSON.stringify(norm);
+      if (!seen[key]) { seen[key] = true; out.push(norm); }
+    }
+  }
+  return out;
+}
+var ORIENTS = PIECES.map(orientations);
+
+// Returns every solution as an array of ROWS*COLS piece indexes (-1 = not covered).
+function solve(month, day, weekday) {
+  var grid = new Int8Array(ROWS * COLS), r, c;
+  for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) grid[r * COLS + c] = isBoardCell(r, c) ? -1 : -2;
+  [monthCell(month), dayCell(day), WEEKDAY_CELL[weekday]].forEach(function (p) { grid[p[0] * COLS + p[1]] = -3; });
+
+  var used = new Array(PIECES.length).fill(false), solutions = [];
+  function rec(start, placed) {
+    if (placed === PIECES.length) {
+      solutions.push(Array.prototype.map.call(grid, function (v) { return v >= 0 ? v : -1; }));
+      return;
+    }
+    var i = start;
+    while (i < grid.length && grid[i] !== -1) i++;
+    if (i === grid.length) return;
+    var r0 = Math.floor(i / COLS), c0 = i % COLS;
+    for (var k = 0; k < PIECES.length; k++) {
+      if (used[k]) continue;
+      var os = ORIENTS[k];
+      for (var o = 0; o < os.length; o++) {
+        var cells = os[o], idx = [], ok = true;
+        for (var j = 0; j < cells.length; j++) {
+          var rr = r0 + cells[j][0], cc = c0 + cells[j][1];
+          if (cc < 0 || cc >= COLS || rr >= ROWS || grid[rr * COLS + cc] !== -1) { ok = false; break; }
+          idx.push(rr * COLS + cc);
+        }
+        if (!ok) continue;
+        for (j = 0; j < idx.length; j++) grid[idx[j]] = k;
+        used[k] = true;
+        rec(i + 1, placed + 1);
+        used[k] = false;
+        for (j = 0; j < idx.length; j++) grid[idx[j]] = -1;
+      }
+    }
+  }
+  rec(0, 0);
+  return solutions;
+}
+
+// ---------- Page ----------
+if (typeof document !== 'undefined') (function () {
+  var COLORS = ['#d9705a','#e0a23c','#c9c24a','#7fb65a','#4fae93','#4f9fc9','#6f7fd6','#a070cf','#cf6fa8','#9a8f80'];
+  var S = 60, PAD = 16, NS = 'http://www.w3.org/2000/svg';
+  var $ = function (id) { return document.getElementById(id); };
+  var dateEl = $('date'), board = $('board');
+  var solutions = [], current = 0, open = [], jobId = 0;
+
+  function iso(d) {
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+  function selected() {
+    var p = dateEl.value.split('-').map(Number);
+    return p.length === 3 && p[0] ? new Date(p[0], p[1] - 1, p[2]) : null;
+  }
+  function el(name, attrs) {
+    var e = document.createElementNS(NS, name);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+  }
+
+  function draw() {
+    board.textContent = '';
+    board.appendChild(el('rect', { x: 1, y: 1, width: 450, height: 510, rx: 18, fill: 'var(--frame)' }));
+    var sol = solutions[current], edges = '', r, c;
+    function at(r, c) { return isBoardCell(r, c) ? (sol ? sol[r * COLS + c] : -1) : -2; }
+    for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) {
+      if (!isBoardCell(r, c)) continue;
+      var x = PAD + c * S, y = PAD + r * S, v = at(r, c);
+      board.appendChild(el('rect', { x: x, y: y, width: S, height: S, fill: v >= 0 ? COLORS[v] : 'var(--well)' }));
+      if (at(r - 1, c) !== v) edges += 'M' + x + ' ' + y + 'h' + S;
+      if (at(r + 1, c) !== v) edges += 'M' + x + ' ' + (y + S) + 'h' + S;
+      if (at(r, c - 1) !== v) edges += 'M' + x + ' ' + y + 'v' + S;
+      if (at(r, c + 1) !== v) edges += 'M' + (x + S) + ' ' + y + 'v' + S;
+    }
+    if (sol) board.appendChild(el('path', { d: edges, fill: 'none', stroke: 'var(--line)', 'stroke-width': 2.5, 'stroke-linecap': 'round' }));
+    open.forEach(function (o) {
+      var t = el('text', { x: PAD + o.c * S + S / 2, y: PAD + o.r * S + S / 2, 'text-anchor': 'middle', 'dominant-baseline': 'central', 'class': 'cell-label' });
+      t.textContent = o.label;
+      board.appendChild(t);
+    });
+
+    var n = solutions.length;
+    $('pos').textContent = n > 1 ? 'Solution ' + (current + 1).toLocaleString() + ' of ' + n.toLocaleString() : '';
+    $('nav').style.display = n > 1 ? '' : 'none';
+  }
+
+  function update() {
+    var d = selected();
+    if (!d) return;
+    var m = d.getMonth(), day = d.getDate(), wd = d.getDay();
+    var mc = monthCell(m), dc = dayCell(day), wc = WEEKDAY_CELL[wd];
+    open = [
+      { r: mc[0], c: mc[1], label: MONTHS[m] },
+      { r: dc[0], c: dc[1], label: String(day) },
+      { r: wc[0], c: wc[1], label: WEEKDAYS[wd] }
+    ];
+    var name = WEEKDAYS[wd] + ' ' + MONTHS[m] + ' ' + day, job = ++jobId;
+    solutions = [];
+    current = 0;
+    $('count').textContent = 'Solving ' + name + '…';
+    draw();
+    // Let the browser paint the "Solving" state before the search blocks.
+    setTimeout(function () {
+      if (job !== jobId) return;
+      solutions = solve(m, day, wd);
+      var n = solutions.length;
+      $('count').textContent = n === 0 ? 'No solutions for ' + name
+        : n === 1 ? '1 solution for ' + name
+        : n.toLocaleString() + ' solutions for ' + name;
+      draw();
+    }, 30);
+  }
+
+  function shiftDay(delta) {
+    var d = selected() || new Date();
+    d.setDate(d.getDate() + delta);
+    dateEl.value = iso(d);
+    update();
+  }
+  function shiftSol(delta) {
+    var n = solutions.length;
+    if (n < 2) return;
+    current = (current + delta + n) % n;
+    draw();
+  }
+
+  dateEl.addEventListener('change', update);
+  $('prevDay').addEventListener('click', function () { shiftDay(-1); });
+  $('nextDay').addEventListener('click', function () { shiftDay(1); });
+  $('today').addEventListener('click', function () { dateEl.value = iso(new Date()); update(); });
+  $('prevSol').addEventListener('click', function () { shiftSol(-1); });
+  $('nextSol').addEventListener('click', function () { shiftSol(1); });
+
+  dateEl.value = iso(new Date());
+  update();
+})();
+</script>
+</body>
+</html>
